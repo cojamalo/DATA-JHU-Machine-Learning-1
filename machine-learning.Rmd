@@ -133,7 +133,7 @@ no_chg = no_chg %>% scale %>% tbl_df %>% apply(2, as.numeric) %>% tbl_df
 
 <br>
 
-#### Create dataset of indpendent variables
+#### Create dataset of independent variables
 
 A data frame with all the independent variables that were processed in the preceding steps is then bound together.
 
@@ -149,7 +149,7 @@ Often, interactions exist between different features that provide important info
 
 #### Identify the most important features using XGBoost
 
-In this case, XGBoost, a gradient boosting algortim that does identify interactions, will be used to identify important interactions between the current features.
+In this case, XGBoost, a gradient boosting algorithm that does identify interactions, will be used to identify important interactions between the current features.
 ```{r fit-interact-model, results="hide", cache=TRUE}
 # Prep data for xgboost
 train_x_num = as.matrix(train_x)

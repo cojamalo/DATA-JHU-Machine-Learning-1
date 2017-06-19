@@ -268,8 +268,8 @@ scaled_list =<span class="st"> </span><span class="kw">apply</span>(no_chg, <spa
 no_chg =<span class="st"> </span>no_chg %&gt;%<span class="st"> </span>scale %&gt;%<span class="st"> </span>tbl_df %&gt;%<span class="st"> </span><span class="kw">apply</span>(<span class="dv">2</span>, as.numeric) %&gt;%<span class="st"> </span>tbl_df</code></pre></div>
 <p><br></p>
 </div>
-<div id="create-dataset-of-indpendent-variables" class="section level4">
-<h4>Create dataset of indpendent variables</h4>
+<div id="create-dataset-of-independent-variables" class="section level4">
+<h4>Create dataset of independent variables</h4>
 <p>A data frame with all the independent variables that were processed in the preceding steps is then bound together.</p>
 <div class="sourceCode"><pre class="sourceCode r"><code class="sourceCode r">train_x =<span class="st"> </span><span class="kw">bind_cols</span>(to_factor, to_date, no_chg)</code></pre></div>
 <p><br></p>
@@ -280,7 +280,7 @@ no_chg =<span class="st"> </span>no_chg %&gt;%<span class="st"> </span>scale %&g
 <p>Often, interactions exist between different features that provide important information for the sake of extracting patterns from the data. Not all learning algorithms account for these interactions, so any important interactions in this dataset will be added to the training set so they are available to any learning algorithm.</p>
 <div id="identify-the-most-important-features-using-xgboost" class="section level4">
 <h4>Identify the most important features using XGBoost</h4>
-<p>In this case, XGBoost, a gradient boosting algortim that does identify interactions, will be used to identify important interactions between the current features.</p>
+<p>In this case, XGBoost, a gradient boosting algorithm that does identify interactions, will be used to identify important interactions between the current features.</p>
 <div class="sourceCode"><pre class="sourceCode r"><code class="sourceCode r"><span class="co"># Prep data for xgboost</span>
 train_x_num =<span class="st"> </span><span class="kw">as.matrix</span>(train_x)
 train_x_label =<span class="st"> </span><span class="kw">as.numeric</span>(train_y$classe)
