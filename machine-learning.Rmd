@@ -202,7 +202,7 @@ xgb.dump(model = bst, fname = dump_path, fmap = fmap_path, with_stats = TRUE)
 
 The procedure to find model interactions using Xgbfi is similar to the one found here: http://projects.rajivshah.com/blog/2016/08/01/xgbfi/
 
-Xgbfi was cloned from its [github repository][https://github.com/Far0n/xgbfi]. The 'xgb.dump' and 'fmap.txt' produced in the step above are placed in the same directory as the `XgbFeatureInteractions.exe` program. The program is then run and outputs an excel file with interaction at multiple depths. The following screenshot depicts the terminal command with xgbfi settings and the resulting excel file: 
+Xgbfi was cloned from its [github repository](https://github.com/Far0n/xgbfi). The 'xgb.dump' and 'fmap.txt' produced in the step above are placed in the same directory as the `XgbFeatureInteractions.exe` program. The program is then run and outputs an excel file with interaction at multiple depths. The following screenshot depicts the terminal command with xgbfi settings and the resulting excel file: 
 
 ```{r screenshot, fig.width=10}
 knitr::include_graphics('xgbfi.png')
@@ -323,11 +323,11 @@ Now, the training data is appropriately preprocessed and ready for modeling.
 
 ## Stage 2: Modelling
 
-To model this data, a random forest will be used. Random forests are an ensemble classifier that consists of many decision trees and is one of the most accurate learning algorithms to use out of the box. It has many advantages including its ability to handle thousands of input variables without variable deletion, resistance to overtraining, and the ability to handle data without preprocessing. The weight lifting data has been preprocessed significantly, so the primary reason a random forest is used here is due to the algorithm's high accuracy, resistance to overtraining, and ability to handle high dimensionality (`train_x` has 147 variables after preprocessing).
+To model this data, a random forest will be used. Random forests are an ensemble classifier that consist of many decision trees and is one of the most accurate learning algorithms to use out of the box. It has many advantages including its ability to handle thousands of input variables without variable deletion, resistance to overtraining, and the ability to handle data without preprocessing. The weight lifting data has been preprocessed significantly, so the primary reason a random forest is used here is due to the algorithm's high accuracy, resistance to overtraining, and ability to handle high dimensionality (`train_x` has 147 variables after preprocessing).
 
 <br>
 
-### Fit a random forest model Using the ranger package
+### Fit a random forest model using the ranger package
 
 The `caret` and `ranger` packages will be combined for this step to fit a random forest model to the training data. The `caret` package will consider different numbers of randomly selected predictors (mtry) as it fits the model. The algorithm makes this selection by estimating the prediction error using a 5x5 K-fold cross validation for each possible setting of the mtry parameter.
 ```{r fit-ranger, cache=TRUE, results="hide"}
