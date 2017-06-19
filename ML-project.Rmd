@@ -1,0 +1,481 @@
+---
+title: "ML Project"
+output: 
+  html_document: 
+    fig_height: 4
+    highlight: pygments
+    theme: spacelab
+    toc: true
+---
+
+### Submission by Connor Lenio. Email: cojamalo@gmail.com
+Completion Date: Jun XX, 2017
+
+* * *
+
+```{r, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,fig.align='center', message = FALSE, warning=FALSE)
+if(!exists("klist", mode="function")) source("/Users/cojamalo/Documents/GitHub/K-Fold-CV-Helper-Functions/kfold.R")
+```
+
+
+## Goal
+The goal of your project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set. You may use any of the other variables to predict with. You should create a report describing how you built your model, how you used cross validation, what you think the expected out of sample error is, and why you made the choices you did. You will also use your prediction model to predict 20 different test cases. 
+
+* * *
+
+## Setup
+
+### Load packages
+
+```{r load-packages, message = FALSE}
+library(data.table)
+library(pander)
+library(ggplot2)
+library(GGally)
+library(gridExtra)
+library(lubridate)
+library(splines)
+library(doMC)
+library(MASS)
+library(foreach)
+library(parallel)
+library(caret)
+library(plyr)
+library(dplyr)
+```
+
+### Load data
+The data was downloaded from Kaggle at https://www.kaggle.com/c/bike-sharing-demand/data on Jun 1, 2017. For the sake of this project, a 75-25 split will be used to validate the model.
+```{r load-data, message=FALSE, warning=FALSE}
+WLE = fread("/Users/cojamalo/Documents/JHU - ML/WLE.csv", na.strings = "", showProgress = FALSE) %>% tbl_df
+train = fread("/Users/cojamalo/Documents/JHU - ML/pml-training.csv", na.strings = "", showProgress = FALSE, drop = "V1") %>% tbl_df
+test = fread("/Users/cojamalo/Documents/JHU - ML/pml-testing.csv", na.strings = "", showProgress = FALSE, drop = "V1") %>% tbl_df
+```
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+Read more: http://groupware.les.inf.puc-rio.br/har#weight_lifting_exercises#ixzz4kBkyfAnE
+
+* * *
+
+## Stage 1: Data Preprocessing & Feature Engineering
+### Feature encodings - extracting unique info from features examples
+#### Convert features to proper types
+```{r}
+## Convert features to factor type
+to_factor = train %>% select(user_name, new_window) %>% tbl_df %>% mutate_if(is.character,as.factor)
+
+## Convert features to date type
+to_date = train %>% select(cvtd_timestamp) %>% mutate(cvtd_timestamp = dmy_hm(cvtd_timestamp))
+
+## No change needed
+no_chg = train %>% select(num_window:total_accel_belt, gyros_belt_x:total_accel_arm, gyros_arm_x:magnet_arm_z, roll_dumbbell:yaw_dumbbell, total_accel_dumbbell, gyros_dumbbell_x:yaw_forearm, total_accel_forearm, gyros_forearm_x:classe)
+
+## Possible removal for high NA
+# > 95%
+to_rm = train %>% select(raw_timestamp_part_1, raw_timestamp_part_2, kurtosis_roll_belt:var_yaw_belt, var_accel_arm:var_yaw_arm, kurtosis_roll_arm:amplitude_yaw_arm, kurtosis_roll_dumbbell:amplitude_yaw_dumbbell, var_accel_dumbbell:var_yaw_dumbbell, kurtosis_roll_forearm:amplitude_yaw_forearm, var_accel_forearm:var_yaw_forearm) 
+
+# extra the dependent feature
+train_y = select(train, classe)
+train_y$classe = factor(train_y$classe)
+```
+
+#### Creating dummy variables for factor types - one hot encoding
+```{r}
+two_level = select(to_factor, new_window)
+two_level$new_window = as.numeric(two_level$new_window) - 1
+dummies <- dummyVars(classe ~ ., data = bind_cols(train_y, select(to_factor, -new_window)))
+to_factor = predict(dummies, newdata = bind_cols(train_y, to_factor)) %>% tbl_df
+to_factor = bind_cols(two_level, to_factor)
+```
+
+#### Extracting unique time info from `cvtd_timestamp`
+```{r}
+to_date = to_date %>% mutate(day = day(cvtd_timestamp), month = month(cvtd_timestamp), year = year(cvtd_timestamp), hour = hour(cvtd_timestamp), minute = minute(cvtd_timestamp)) %>% select(-cvtd_timestamp)
+```
+
+#### Scale continous variables
+```{r}
+no_chg = no_chg %>% select(-classe) %>% scale %>% tbl_df %>% apply(2, as.numeric) %>% tbl_df
+```
+
+#### Create dataset of indpendent variables
+```{r}
+train_x = bind_cols(to_factor, to_date, no_chg)
+```
+
+
+### 2-, 3- & 4-way feature interactions (sums, differences, products and quotients)
+
+#### Identify the most imporant features using XGBoost as a wrapper
+```{r}
+library(xgboost)
+# # Prep data for xgboost
+# train_x_num = as.matrix(train_x)
+# train_x_label = as.numeric(train_y$classe)
+# train_x_matrix = xgb.DMatrix(data = train_x_num, label = train_x_label)
+# 
+# # 1) Use default parameters
+# # 2) Set eta to 0.1 and find best nrounds
+# # 3) Tune rest of the parameters with eta and nrounds fixed
+# # 4) Tune the regularization parameters if required
+# # 5) Tune the eta parameter by itself
+# 
+# errors = c()
+# for (i in seq(from = 2, to = 10, by = 1)) {
+#     print(i)
+#     bst_cv <- xgb.cv(data = train_x_matrix,
+#                nround = 100, # default 100
+#                eta = 0.1, # default 0.3
+#                max.depth = i, # default = 6 
+#                gamma = 0, # default 0, if train error >>> test error, bring gamma into action
+#                min_child_weight = 1, # default = 1
+#                subsample = 1, # default = 1
+#                colsample_bytree = 1, # default 1
+#                objective = "multi:softmax",
+#                eval_metric = "merror",
+#                num_class = 6, nfold = 5)
+#     errors = c(errors, bst_cv$evaluation_log[80,4]$test_merror_mean)
+# }
+# 
+# output <- data.frame(depth = seq(from = 2, to = 10, by = 1), KFOLD_errors = NA)
+# output$KFOLD_errors <- errors
+# pandoc.table(output)
+# ggplot(output, aes(x = depth, y = KFOLD_errors)) + geom_point() + 
+#     geom_vline(xintercept = 6) +
+#     theme(legend.position=c(0.2, 0.8), plot.title = element_text(hjust = 0.5)) +
+#     labs(title = "", y = "Error", x = "eta")
+```
+
+
+```{r}
+# Prep data for xgboost
+train_x_num = as.matrix(train_x)
+train_x_label = as.numeric(train_y$classe)
+train_x_matrix = xgb.DMatrix(data = train_x_num, label = train_x_label)
+
+bst <- xgboost(data = train_x_matrix,
+               nround = 100, # default 100
+               eta = 0.1, # default 0.3
+               max.depth = 6, # default = 6 
+               gamma = 0, # default 0, if train error >>> test error, bring gamma into action
+               min_child_weight = 1, # default = 1
+               subsample = 1, # default = 1
+               colsample_bytree = 1, # default 1
+               objective = "multi:softmax",
+               eval_metric = "merror",
+               num_class = 6)
+
+xgb.importance(colnames(train_x_num, do.NULL = TRUE, prefix = "col"), model = bst)
+
+featureList <- names(train_x)
+featureVector <- c() 
+for (i in 1:length(featureList)) { 
+  featureVector[i] <- paste(i-1, featureList[i], "q", sep="\t") 
+}
+write.table(featureVector, "/Users/cojamalo/Documents/GitHub/xgbfi/bin/fmap.txt", row.names=FALSE, quote = FALSE, col.names = FALSE)
+xgb.dump(model = bst, fname = '/Users/cojamalo/Documents/GitHub/xgbfi/bin/xgb.dump', fmap = "/Users/cojamalo/Documents/GitHub/xgbfi/bin/fmap.txt", with_stats = TRUE)
+
+xgb.plot.importance(xgb.importance(colnames(train_x_num, do.NULL = TRUE, prefix = "col"), model = bst), top_n = 28)
+```
+
+
+```{r}
+library(xlsx)
+depth0 = read.xlsx('/Users/cojamalo/Documents/GitHub/xgbfi/bin/XgbFeatureInteractions.xlsx', sheetIndex = 1) %>% tbl_df %>% mutate(interact_order = 1)
+depth1 = read.xlsx('/Users/cojamalo/Documents/GitHub/xgbfi/bin/XgbFeatureInteractions.xlsx', sheetIndex = 2) %>% tbl_df %>% mutate(interact_order = 2)
+depth2 = read.xlsx('/Users/cojamalo/Documents/GitHub/xgbfi/bin/XgbFeatureInteractions.xlsx', sheetIndex = 3) %>% tbl_df %>% mutate(interact_order = 3)
+depth3 = read.xlsx('/Users/cojamalo/Documents/GitHub/xgbfi/bin/XgbFeatureInteractions.xlsx', sheetIndex = 4) %>% tbl_df %>% mutate(interact_order = 4)
+
+interact = bind_rows(depth0, depth1, depth2, depth3)
+interact$interact_order = factor(interact$interact_order)
+
+interact %>% group_by(interact_order) %>% summarize(Q1_gain = quantile(Gain, 0.25), med_gain = median(Gain),  mean_gain = mean(Gain), Q3_gain = quantile(Gain, 0.75), max_gain = max(Gain))
+```
+
+```{r}
+sec_ord = interact %>% filter(interact_order == 2 & Gain > 2819) %>% select(Interaction) %>% as.matrix
+third_ord = interact %>% filter(interact_order == 3 & Gain > 6541) %>% select(Interaction) %>% as.matrix
+fourth_ord = interact %>% filter(interact_order == 4 & Gain > 8375) %>% select(Interaction) %>% as.matrix
+
+prep_interact_char_vec = function(ord_matrix) {
+    ord_matrix = as.character(ord_matrix) 
+    for (i in 1:length(ord_matrix)) {
+    ord_matrix[i] = gsub("|", ":", ord_matrix[i], fixed = TRUE)
+    }
+    return(ord_matrix)
+}
+
+sec_ord = prep_interact_char_vec(sec_ord)
+third_ord = prep_interact_char_vec(third_ord)
+fourth_ord = prep_interact_char_vec(fourth_ord)
+```
+
+
+#### Add interaction terms to the data
+
+```{r}
+prep_interacts_tbl = function(ord_char_vec, data) {
+    mod_mat_formula = ""
+    for (i in 1:length(ord_char_vec)) {
+        if (i == 1) {
+            mod_mat_formula = paste0(mod_mat_formula, sec_ord[i])     
+        }
+        else {
+            mod_mat_formula = paste0(mod_mat_formula, " + ", sec_ord[i])  
+        }
+    }
+    mod_mat_formula = paste0("~ ", mod_mat_formula)
+    add_matrix = model.matrix(as.formula(mod_mat_formula), data)
+    colnames(add_matrix)
+    rm_index = c()
+    for (i in 1:length(colnames(add_matrix))) {
+        if (!grepl(":", colnames(add_matrix)[i], fixed = TRUE)) {
+        rm_index = c(rm_index, i)
+        }
+    }
+    add_matrix = add_matrix[,-rm_index]
+    colnames(add_matrix) = gsub(":", "_", colnames( add_matrix))
+    return(tbl_df(add_matrix)) 
+}
+
+sec_ord_tbl = prep_interacts_tbl(sec_ord, train_x)
+third_ord_tbl = prep_interacts_tbl(third_ord, train_x)
+fourth_ord_tbl = prep_interacts_tbl(fourth_ord, train_x)
+```
+
+#### Stitch together final dataset
+```{r}
+train_x = bind_cols(train_x, sec_ord_tbl, third_ord_tbl, fourth_ord_tbl)
+train_x = train_x[, !duplicated(colnames(train_x))]
+```
+
+
+## Stage 2: Feature Ranking & Subset Selection
+
+### Nearzero Variance
+```{r}
+# Identify near zero variance predictors: remove_cols
+nzv = nearZeroVar(train_x, names = TRUE, saveMetrics = TRUE)
+indexes = rownames(nzv[nzv$nzv,])
+data.frame(indexes = indexes, nzv[nzv$nzv,]) %>% tbl_df %>% arrange(percentUnique)
+```
+
+### Remove Zero Variance
+```{r}
+train_x = select(train_x, -year)
+```
+
+
+### Highly Correlated
+```{r}
+# Finds correlations greater than 0.999
+descrCor <-  cor(no_chg)
+highCorr <- sum(abs(descrCor[upper.tri(descrCor)]) > .999)
+summary(descrCor[upper.tri(descrCor)]) # Gives summary statistics for all correlations in the data
+summary(apply(abs(descrCor), 2, quantile, c(0.99))) # gives summary of 98th quantile of correlations for all columns 
+```
+
+## Stage 3: Modeling
+
+### Model 1: Gradient Boosting using XGBoost
+```{r}
+model1 = bst
+```
+
+```{r}
+mod1_pred = predict(model1, train_x_matrix)
+mod1_cmat = table(mod1_pred, as.numeric(train_y$classe))
+mod1_acc = sum(diag(mod1_cmat)) / sum(mod1_cmat)
+mod1_acc
+```
+
+
+### Model 2: Random Forest Using Ranger
+```{r}
+fit_dat = bind_cols(train_x, train_y)
+model2 <- train(
+  classe ~ .,
+  data = fit_dat,
+  tuneLength = 1,
+  tuneGrid = data.frame(mtry = c(9)),
+  method = "ranger",
+  trControl = trainControl(method = "none", number = 5, verboseIter = FALSE)
+)
+```
+
+```{r}
+mod2_pred = predict(model2, train_x)
+mod2_cmat = table(mod2_pred, as.numeric(train_y$classe))
+mod2_acc = sum(diag(mod2_cmat)) / sum(mod2_cmat)
+mod2_acc
+```
+
+
+### Model 3: Multinomial Softmax Classificaiton
+```{r}
+fit_dat = bind_cols(train_x, train_y)
+model3 <- train(
+  classe ~ .,
+  data = fit_dat,
+  tuneLength = 1,
+  tuneGrid = data.frame(decay = c(1.2)),
+  method = "multinom",
+  trControl = trainControl(method = "none", number = 5, verboseIter = FALSE)
+)
+```
+```{r}
+mod3_pred = predict(model3, train_x)
+mod3_cmat = table(mod3_pred, as.numeric(train_y$classe))
+mod3_acc = sum(diag(mod3_cmat)) / sum(mod3_cmat)
+mod3_acc
+```
+
+## Stage 4: Ensembling
+### Ensemble modelling using Stacking and Neural Networks
+```{r}
+stack_dat = bind_cols(train_x, train_y)
+stack_dat$row_num = c(1:nrow(stack_dat))
+
+set.seed(123)
+# Randomly shuffle the data
+stack_dat <- sample_n(stack_dat, size = nrow(stack_dat))
+stack_dat$fold = rep_len(c(1,2,3,4,5), length.out = nrow(stack_dat))
+
+#Fold 1
+test_fold_1 = stack_dat %>% filter(fold == 1)
+train_fold_1 = stack_dat %>% filter(fold != 1)
+#Fold 2
+test_fold_2 = stack_dat %>% filter(fold == 2)
+train_fold_2 = stack_dat %>% filter(fold != 2)
+#Fold 3
+test_fold_3 = stack_dat %>% filter(fold == 3)
+train_fold_3 = stack_dat %>% filter(fold != 3)
+#Fold 4
+test_fold_4 = stack_dat %>% filter(fold == 4)
+train_fold_4 = stack_dat %>% filter(fold != 4)
+#Fold 5
+test_fold_5 = stack_dat %>% filter(fold == 5)
+train_fold_5 = stack_dat %>% filter(fold != 5)
+```
+
+#### Model 1 Folds
+
+```{r}
+model1_fit = function(train_fold, test_fold) {
+    # Prep data for xgboost
+    train_x_num = as.matrix(select(train_fold, -classe, -row_num))
+    train_x_label = as.numeric(train_fold$classe)
+    train_x_matrix = xgb.DMatrix(data = train_x_num, label = train_x_label)
+    model_fold = xgboost(data = train_x_matrix, silent = 1,
+                nround = 100, # default 100
+                eta = 0.1, # default 0.3
+                max.depth = 6, # default = 6 
+                gamma = 0, # default 0, if train error >>> test error, bring gamma into action
+                min_child_weight = 1, # default = 1
+                subsample = 1, # default = 1
+                colsample_bytree = 1, # default 1
+                objective = "multi:softmax",
+                eval_metric = "merror",
+                num_class = 6)
+    # Prep data for xgboost
+    test_x_num = as.matrix(select(test_fold, -classe, -row_num))
+    test_x_label = as.numeric(test_fold$classe)
+    test_x_matrix = xgb.DMatrix(data = test_x_num, label = test_x_label)
+
+    pred = predict(model_fold, test_x_matrix)
+    pred = factor(revalue(as.character(pred), c("1"="A","2"="B","3"="C","4"="D","5"="E")))
+    train_add_meta = data.frame(row_num = test_fold$row_num, M1 = pred)
+    return(train_add_meta)
+}
+pred1 = model1_fit(train_fold_1, test_fold_1)
+pred2 = model1_fit(train_fold_2, test_fold_2)
+pred3 = model1_fit(train_fold_3, test_fold_3)
+pred4 = model1_fit(train_fold_4, test_fold_4)
+pred5 = model1_fit(train_fold_5, test_fold_5)
+
+train_meta = bind_rows(pred1, pred2, pred3, pred4, pred5)
+```
+
+#### Model 2 Folds
+
+```{r}
+model2_fit = function(train_fold, test_fold) {
+    fit_dat = train_fold
+    model_fold = train(classe ~ .,
+                        data = fit_dat,
+                        tuneLength = 1,
+                        tuneGrid = data.frame(mtry = c(9)),
+                        method = "ranger",
+                        trControl = trainControl(method = "none", number = 5, verboseIter = FALSE)
+                        )
+    pred = predict(model_fold, test_fold)
+    pred = factor(pred)
+    train_add_meta = data.frame(row_num = test_fold$row_num, M2 = pred)
+    return(train_add_meta)
+}
+pred1 = model2_fit(train_fold_1, test_fold_1)
+pred2 = model2_fit(train_fold_2, test_fold_2)
+pred3 = model2_fit(train_fold_3, test_fold_3)
+pred4 = model2_fit(train_fold_4, test_fold_4)
+pred5 = model2_fit(train_fold_5, test_fold_5)
+
+train_meta_col = bind_rows(pred1, pred2, pred3, pred4, pred5)
+train_meta = left_join(train_meta, train_meta_col, by = "row_num") 
+```
+
+
+#### Model 3 Folds
+
+```{r}
+model3_fit = function(train_fold, test_fold) {
+    fit_dat = train_fold
+    model_fold = train(classe ~ .,
+                        data = fit_dat,
+                        tuneLength = 1,
+                        tuneGrid = data.frame(decay = c(1.2)),
+                        method = "multinom",
+                        trControl = trainControl(method = "none", number = 5, verboseIter = FALSE)
+                        )
+    pred = predict(model_fold, test_fold)
+    pred = factor(pred)
+    train_add_meta = data.frame(row_num = test_fold$row_num, M3 = pred)
+    return(train_add_meta)
+}
+pred1 = model3_fit(train_fold_1, test_fold_1)
+pred2 = model3_fit(train_fold_2, test_fold_2)
+pred3 = model3_fit(train_fold_3, test_fold_3)
+pred4 = model3_fit(train_fold_4, test_fold_4)
+pred5 = model3_fit(train_fold_5, test_fold_5)
+
+train_meta_col = bind_rows(pred1, pred2, pred3, pred4, pred5)
+train_meta = left_join(train_meta, train_meta_col, by = "row_num") 
+train_meta = arrange(train_meta, row_num) %>% select(-row_num)
+```
+
+#### Meta Test
+
+```{r}
+mod1_pred = factor(revalue(as.character(mod1_pred), c("1"="A","2"="B","3"="C","4"="D","5"="E")))
+mod2_pred
+mod3_pred
+test_meta = data.frame(M1 = mod1_pred, M2 = mod2_pred, M3 = mod3_pred)
+```
+#### Stack fit
+```{r}
+fit_dat = train_meta
+fit_dat$classe = train_y$classe
+stack1 = train(classe ~ .,
+                data = fit_dat,
+                tuneLength = 1,
+                tuneGrid = data.frame(size = c(5), decay = c(0.1)),
+                method = "nnet",
+                trControl = trainControl(method = "none", number = 5, repeats = 5,verboseIter = FALSE)
+                )
+
+pred_stack = predict(stack1, train_meta)
+```
+
+
+
